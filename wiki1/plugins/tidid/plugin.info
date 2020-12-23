@@ -1,0 +1,6 @@
+{
+	"title": "$:/plugins/ichorid/tidid",
+	"name": "tidid",
+	"description": "Add an unique field to each newly created tiddler",
+    "priority": 9
+}

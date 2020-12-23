@@ -1,0 +1,2 @@
+title: $:/tags/SyncerDropdown
+list: $:/plugins/tiddlywiki/c3sync/syncer-actions/refresh $:/plugins/tiddlywiki/c3sync/syncer-actions/save-snapshot $:/plugins/tiddlywiki/c3sync/syncer-actions/copy-logs

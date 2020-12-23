@@ -1,0 +1,8 @@
+{
+	"title": "$:/plugins/ichorid/c3sync",
+	"name": "C3Sync",
+    "dependents": ["$:/plugins/ichorid/tidid"],
+	"description": "Sync changes from the browser to Tribler Channels 3.0 backend",
+	"list": "readme",
+	"plugin-priority": 10
+}

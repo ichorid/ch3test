@@ -12,11 +12,14 @@ import socket
 import struct
 import time
 
+logging.basicConfig()
+logging.getLogger().setLevel(logging.DEBUG)
+
 from ipv8.messaging.lazy_payload import vp_compile, VariablePayload
 from ipv8.taskmanager import TaskManager
 
-HTTP_PORT = struct.pack('> H', 80)  # normally 80
-HTTP_ALT_PORT = struct.pack('> H', 8080)  # normally 8080
+HTTP_PORT = struct.pack("> H", 80)  # normally 80
+HTTP_ALT_PORT = struct.pack("> H", 8080)  # normally 8080
 
 
 def is_http_port(port):
@@ -27,67 +30,101 @@ def checksum(buf):
     """One's complement 16-bit checksum."""
     # ensure multiple of two length
     if len(buf) & 1:
-        buf = buf + '\0'
+        buf = buf + "\0"
     sz = len(buf)
 
     # add all 16 bit pairs into the total
     num_shorts = sz / 2
-    tot = sum(struct.unpack('> %uH' % num_shorts, buf))
+    tot = sum(struct.unpack("> %uH" % num_shorts, buf))
 
     # fold any carries back into the lower 16 bits
     tot = (tot >> 16) + (tot & 0xFFFF)  # add hi 16 to low 16
-    tot += (tot >> 16)  # add carry
+    tot += tot >> 16  # add carry
     return (~tot) & 0xFFFF  # truncate to 16 bits
 
 
 def tcp_checksum(ip_hdr, tcp_hdr, tcp_data):
     """Computes the TCP checksum for the given TCP/IP data."""
 
-    total_len = struct.pack('> H', len(tcp_hdr) + len(tcp_data))
-    pseudo_hdr = ip_hdr[12:20] + '\x00' + ip_hdr[9] + total_len
-    tcp_hdr_with_zero_csum = tcp_hdr[0:16] + '\x00\x00' + tcp_hdr[18:]
-    pad = '\x00' if len(tcp_data) & 1 else ''
+    total_len = struct.pack("> H", len(tcp_hdr) + len(tcp_data))
+    pseudo_hdr = ip_hdr[12:20] + "\x00" + ip_hdr[9] + total_len
+    tcp_hdr_with_zero_csum = tcp_hdr[0:16] + "\x00\x00" + tcp_hdr[18:]
+    pad = "\x00" if len(tcp_data) & 1 else ""
     combined = tcp_hdr_with_zero_csum + tcp_data + pad + pseudo_hdr
     return checksum(combined)
 
+TCP_FIN_FLAG = 0x01
+TCP_SYN_FLAG = 0x02
+TCP_RST_FLAG = 0x04
+TCP_ACK_FLAG = 0x10
 
 @vp_compile
 class TcpPayload(VariablePayload):
     msg_id = 22
-    names = ['tcp_src_port', 'tcp_dst_port', 'seq', 'ack', 'flags', 'window', 'tcp_data']
-    format_list = ['H', 'H', 'I', 'I', 'B', 'H', 'raw']
+    names = [
+        "tcp_src_port",
+        "tcp_dst_port",
+        "seq",
+        "ack",
+        "flags",
+        "window",
+        "tcp_data",
+    ]
+    format_list = ["H", "H", "I", "I", "B", "H", "raw"]
+
+    @property
+    def is_tcp_syn(self):
+        return bool(self.flags & TCP_SYN_FLAG)
+
+    @property
+    def is_tcp_fin(self):
+        return bool(self.flags & TCP_FIN_FLAG)
+
+    @property
+    def is_tcp_ack(self):
+        return bool(self.flags & TCP_ACK_FLAG)
 
 
 def cmp(a, b):
     return (a > b) - (a < b)
 
 
-def make_tcp_packet(src_port, dst_port, seq=0, ack=0, window=5096, data=b'',
-                    is_fin=False, is_rst=False, is_syn=False, is_ack=True):
+def make_tcp_packet(
+    src_port,
+    dst_port,
+    seq=0,
+    ack=0,
+    window=5096,
+    data=b"",
+    is_fin=False,
+    is_rst=False,
+    is_syn=False,
+    is_ack=True,
+):
     """Creates a TCP header with no options and with the checksum zeroed."""
     flags = 0x00
     if is_fin:
-        flags |= 0x01
+        flags |= TCP_FIN_FLAG
     if is_syn:
-        flags |= 0x02
+        flags |= TCP_SYN_FLAG
     if is_rst:
-        flags |= 0x04
+        flags |= TCP_RST_FLAG
     if is_ack:
-        flags |= 0x10
+        flags |= TCP_ACK_FLAG
     return TcpPayload(src_port, dst_port, seq, ack, flags, window, data)
 
 
 def add_fin_to_tcp_packet(p):
     """Add the FIN flag to a TCP packet (as returned by make_tcp_packet)."""
     header = p[0]
-    flags = struct.unpack('>B', header[13])[0]
+    flags = struct.unpack(">B", header[13])[0]
     flags |= 0x01
-    flags_byte = struct.pack('>B', flags)
+    flags_byte = struct.pack(">B", flags)
     new_header = header[:13] + flags_byte + header[14:]
     return (new_header, p[1])
 
 
-class TCPSegment():
+class TCPSegment:
     """Describes a contiguous chunk of data in a TCP stream."""
 
     def __init__(self, seq, data):
@@ -95,7 +132,7 @@ class TCPSegment():
         self.data = data  # data in this segment
         self.next = seq + len(data)  # first sequence # of the next data byte
         if not data:
-            raise Exception('segments must contain at least 1B of data')
+            raise Exception("segments must contain at least 1B of data")
 
     def combine(self, s2):
         """Combine this segment with a s2 which comes no earlier than this
@@ -123,9 +160,20 @@ class TCPSegment():
 class TCPConnection(TaskManager):
     """Manages the state of one half of a TCP connection."""
 
-    def __init__(self, syn_seq, my_ip, my_port, other_ip, other_port,
-                 connection_over_callback, has_data_to_send_callback,
-                 assumed_rtt=0.5, mtu=1500, max_data=2048, max_wait_time_sec=5):
+    def __init__(
+        self,
+        syn_seq,
+        my_ip,
+        my_port,
+        other_ip,
+        other_port,
+        connection_over_callback,
+        has_data_to_send_callback,
+        assumed_rtt=0.5,
+        mtu=1500,
+        max_data=2048,
+        max_wait_time_sec=5,
+    ):
         super().__init__()
         # socket pair
         self.my_ip = my_ip
@@ -139,7 +187,9 @@ class TCPConnection(TaskManager):
         self.max_data = max_data
         self.max_wait_time_sec = max_wait_time_sec
         self.last_activity = time.time()
-        self.register_task("Check wait time", self.__check_wait_time, delay=self.max_wait_time_sec)
+        self.register_task(
+            "Check wait time", self.__check_wait_time, delay=self.max_wait_time_sec
+        )
         # reactor.callLater(self.max_wait_time_sec, self.__check_wait_time)
 
         # callbacks
@@ -157,7 +207,7 @@ class TCPConnection(TaskManager):
 
         # information about outgoing data and relevant ACKs
         self.window = 0
-        self.data_to_send = b''
+        self.data_to_send = b""
         self.num_data_bytes_acked = 0
         self.first_unacked_seq = random.randint(0, 0x8FFFFFFF)
         self.last_seq_sent = self.first_unacked_seq
@@ -172,8 +222,11 @@ class TCPConnection(TaskManager):
         """Merges segment into the bytes already received.  Raises socket.error
         if this segment indicates that the data block will exceed the maximum
         allowed."""
-        if len(self.segments) > 0 and segment.next - self.segments[0].seq > self.max_data:
-            raise socket.error('maximum data limit exceeded')
+        if (
+            len(self.segments) > 0
+            and segment.next - self.segments[0].seq > self.max_data
+        ):
+            raise OSError("maximum data limit exceeded")
 
         self.__add_segment(segment)
         if len(self.segments) > 0 and self.segments[0].next > self.next_seq_needed:
@@ -190,10 +243,12 @@ class TCPConnection(TaskManager):
 
         if not combined_index:
             self.segments.append(segment)
-            logging.debug('appended the new segment to the end of our current segments list')
+            logging.debug(
+                "appended the new segment to the end of our current segments list"
+            )
             return
         else:
-            logging.debug('merging the new segment into segment %d' % i)
+            logging.debug("merging the new segment into segment %d" % i)
 
         i = combined_index
         new_segment = self.segments[i]
@@ -207,12 +262,15 @@ class TCPConnection(TaskManager):
         """Adds data to be sent to the other side of the connection.  Raises
         socket.error if the socket is closed."""
         if not self.closed:
-            logging.debug('Adding %dB to send (%dB already waiting)' % (len(data), len(self.data_to_send)))
+            logging.debug(
+                "Adding %dB to send (%dB already waiting)"
+                % (len(data), len(self.data_to_send))
+            )
             self.data_to_send += data
             self.all_data_sent = False
             self.__need_to_send_now(True)  # send the data
         else:
-            raise socket.error('cannot send data on a closed socket')
+            raise OSError("cannot send data on a closed socket")
 
     def __check_wait_time(self):
         """Checks to see if this connection has been idle for longer than
@@ -222,8 +280,11 @@ class TCPConnection(TaskManager):
             self.connection_over_callback()
             self.dead = True
         else:
-            self.register_anonymous_task("Call __check_wait_time ", self.__check_wait_time,
-                                         delay=self.max_wait_time_sec)
+            self.register_anonymous_task(
+                "Call __check_wait_time ",
+                self.__check_wait_time,
+                delay=self.max_wait_time_sec,
+            )
             # reactor.callLater(self.max_wait_time_sec, self.__check_wait_time)
 
     def close(self):
@@ -250,7 +311,7 @@ class TCPConnection(TaskManager):
         if self.segments:
             return self.segments[0].data
         else:
-            return ''
+            return ""
 
     def get_socket_pair(self):
         """Returns the socket pair describing this connection (other then self)."""
@@ -262,7 +323,7 @@ class TCPConnection(TaskManager):
 
     def has_ready_data(self):
         """Returns True if data has been received and there are no gaps in it."""
-        logging.debug('# segments = %d' % len(self.segments))
+        logging.debug("# segments = %d" % len(self.segments))
         return len(self.segments) == 1
 
     def __need_to_send_now(self, data_not_ack=False):
@@ -287,15 +348,23 @@ class TCPConnection(TaskManager):
         """Resets the retransmission timer."""
         delay = 2 * self.rtt
         self.next_resend = time.time() + delay
-        self.register_anonymous_task("Run has_data_to_send_callback ", self.has_data_to_send_callback, delay=delay)
+        self.register_anonymous_task(
+            "Run has_data_to_send_callback ",
+            self.has_data_to_send_callback,
+            delay=delay,
+        )
         # reactor.callLater(2 * self.rtt, self.has_data_to_send_callback)
 
     def set_ack(self, ack):
         """Handles receipt of an ACK."""
         if ack - 1 > self.last_seq_sent:
             logging.warning(
-                "truncating an ACK for bytes we haven't sent: ack=%d last_seq_sent=%d" % (ack, self.last_seq_sent))
-            ack = self.last_seq_sent + 1  # assume they meant to ack all bytes we have sent
+                "truncating an ACK for bytes we haven't sent: ack=%d last_seq_sent=%d"
+                % (ack, self.last_seq_sent)
+            )
+            ack = (
+                self.last_seq_sent + 1
+            )  # assume they meant to ack all bytes we have sent
 
         diff = ack - self.first_unacked_seq
         if diff > 0:
@@ -330,21 +399,31 @@ class TCPConnection(TaskManager):
         now = time.time()
         if now < self.next_resend:
             if not self.need_to_send_ack and not self.need_to_send_data:
-                logging.debug('not time to send any packets yet (now=%d next=%d)' % (now, self.next_resend))
+                logging.debug(
+                    "not time to send any packets yet (now=%d next=%d)"
+                    % (now, self.next_resend)
+                )
                 return ret
         else:
-            logging.debug('retransmit timer has expired: will retransmit %dB outstanding bytes',
-                          self.last_seq_sent - self.first_unacked_seq + 1)
+            logging.debug(
+                "retransmit timer has expired: will retransmit %dB outstanding bytes",
+                self.last_seq_sent - self.first_unacked_seq + 1,
+            )
             retransmit = True
 
         # do we have something to send?
         if not self.my_syn_acked:
-            logging.debug('Adding my SYN packet to the outgoing queue')
-            ret.append(make_tcp_packet(self.my_port, self.other_port,
-                                       seq=self.first_unacked_seq,
-                                       ack=self.__get_ack_num(),
-                                       data=b'',
-                                       is_syn=True))
+            logging.debug("Adding my SYN packet to the outgoing queue")
+            ret.append(
+                make_tcp_packet(
+                    self.my_port,
+                    self.other_port,
+                    seq=self.first_unacked_seq,
+                    ack=self.__get_ack_num(),
+                    data=b"",
+                    is_syn=True,
+                )
+            )
 
         sz = self.num_unacked_data_bytes()
         base_offset = self.first_unacked_seq + (0 if self.my_syn_acked else 1)
@@ -356,9 +435,16 @@ class TCPConnection(TaskManager):
             max_outstanding_chunks = self.window // data_chunk_size
             num_chunks_to_send_now = min(num_chunks_left, max_outstanding_chunks)
             logging.debug(
-                'Will make sure %d chunks are out now (%d chunks total remain): chunk size=%dB, window=%dB=>%d chunks may be out, outstanding=%dB' % \
-                (num_chunks_to_send_now, num_chunks_left, data_chunk_size, self.window, max_outstanding_chunks,
-                 outstanding_bytes))
+                "Will make sure %d chunks are out now (%d chunks total remain): chunk size=%dB, window=%dB=>%d chunks may be out, outstanding=%dB"
+                % (
+                    num_chunks_to_send_now,
+                    num_chunks_left,
+                    data_chunk_size,
+                    self.window,
+                    max_outstanding_chunks,
+                    outstanding_bytes,
+                )
+            )
             # create the individual TCP packets to send
             for i in range(1 + num_chunks_to_send_now):
                 # determine what bytes and sequence numbers this chunk includes
@@ -387,36 +473,55 @@ class TCPConnection(TaskManager):
                 # track the latest byte we've sent and formulate this chunk into a packet
                 self.last_seq_sent = max(self.last_seq_sent, end_seq)
                 logging.debug(
-                    'Adding data bytes from %d to %d (inclusive) to the outgoing queue' % (start_seq, end_seq))
-                ret.append(make_tcp_packet(self.my_port, self.other_port,
-                                           seq=start_seq,
-                                           ack=self.__get_ack_num(),
-                                           data=self.data_to_send[start_index:end_index_plus1]))
+                    "Adding data bytes from %d to %d (inclusive) to the outgoing queue"
+                    % (start_seq, end_seq)
+                )
+                ret.append(
+                    make_tcp_packet(
+                        self.my_port,
+                        self.other_port,
+                        seq=start_seq,
+                        ack=self.__get_ack_num(),
+                        data=self.data_to_send[start_index:end_index_plus1],
+                    )
+                )
 
         # send a FIN if we're closed, our FIN hasn't been ACKed, and we've sent
         # all the data we were asked to already (or there isn't any)
         if self.closed and not self.my_fin_acked and (self.all_data_sent or sz <= 0):
             if not self.my_fin_sent or retransmit:
                 if ret:
-                    logging.debug('Making the last packet a FIN packet')
+                    logging.debug("Making the last packet a FIN packet")
                     ret[-1] = add_fin_to_tcp_packet(ret[-1])
                 else:
-                    logging.debug('Adding my FIN packet to the outgoing queue')
-                    ret.append(make_tcp_packet(self.my_port, self.other_port,
-                                               seq=base_offset + sz,
-                                               ack=self.__get_ack_num(),
-                                               data='',
-                                               is_fin=True))
+                    logging.debug("Adding my FIN packet to the outgoing queue")
+                    ret.append(
+                        make_tcp_packet(
+                            self.my_port,
+                            self.other_port,
+                            seq=base_offset + sz,
+                            ack=self.__get_ack_num(),
+                            data="",
+                            is_fin=True,
+                        )
+                    )
             if not self.my_fin_sent:
                 self.my_fin_sent = True
                 self.last_seq_sent += 1
 
         if not ret and self.need_to_send_ack:
-            logging.debug('Adding a pure ACK to the outgoing queue (nothing to piggyback on)')
-            ret.append(make_tcp_packet(self.my_port, self.other_port,
-                                       seq=self.first_unacked_seq,
-                                       ack=self.__get_ack_num(),
-                                       data=b''))
+            logging.debug(
+                "Adding a pure ACK to the outgoing queue (nothing to piggyback on)"
+            )
+            ret.append(
+                make_tcp_packet(
+                    self.my_port,
+                    self.other_port,
+                    seq=self.first_unacked_seq,
+                    ack=self.__get_ack_num(),
+                    data=b"",
+                )
+            )
 
         if ret:
             self.reset_resend_timer()
@@ -424,83 +529,106 @@ class TCPConnection(TaskManager):
         return ret
 
 
-class TCPServer():
+class TCPServer:
     """Implements a basic TCP Server which handles raw TCP packets passed to it."""
+
     # Pass this value to the constructor and the TCPServer will accept connections on any port.
     ANY_PORT = 0
 
     def __init__(self, port, max_active_conns=25):
         """port is the port the TCPServer should listen for SYN packets on."""
-        assert port >= 0 and port < 65536, "Port must be between 0 and 65536 (exclusive) or TCPServer.ANY_PORT"
+        assert (
+            port >= 0 and port < 65536
+        ), "Port must be between 0 and 65536 (exclusive) or TCPServer.ANY_PORT"
         self.connections = {}
-        self.listening_port_nbo = struct.pack('>H', port)
+        self.listening_port = port
         self.max_active_conns = max_active_conns
 
     def __connection_over(self, conn):
         """Called when it is ready to be removed.  Removes the connection."""
         socket_pair = conn.get_socket_pair()
-        logging.debug('connection over callback from: %s' % str(socket_pair))
+        logging.debug("connection over callback from: %s" % str(socket_pair))
         try:
             del self.connections[socket_pair]
         except KeyError:
-            logging.warning('Tried to remove connection which is not in our dictionary: %s' % str(socket_pair))
+            logging.warning(
+                "Tried to remove connection which is not in our dictionary: %s"
+                % str(socket_pair)
+            )
 
     def __connection_has_data_to_send(self, conn):
         """Called when a connection has data to send."""
         pass
 
-    def get_port_nbo(self):
-        """Returns the 2-byte NBO representation of the port being listened on."""
-        return self.listening_port_nbo
-
-    def handle_tcp(self, pkt: TcpPayload):
+    def handle_tcp(self, pkt: TcpPayload, ip_src, ip_dst):
         """Processes pkt as if it was just received.  pkt should be a valid TCP
         packet.  Returns the TCPConnection pkt is associated with, if any."""
-        #assert pkt.is_tcp() and pkt.is_valid_tcp(), "TCPServer.handle_tcp expects a valid TCP packet as input"
+        # assert pkt.is_tcp() and pkt.is_valid_tcp(), "TCPServer.handle_tcp expects a valid TCP packet as input"
 
         # ignore TCP packets not to us
-        if self.listening_port_nbo != '\x00\x00' and pkt.tcp_dst_port != self.listening_port_nbo:
-            logging.debug('ignoring TCP packet to a port we are not listening on')
+        if (
+            self.listening_port != TCPServer.ANY_PORT
+            and pkt.tcp_dst_port != self.listening_port
+        ):
+            logging.debug("ignoring TCP packet to a port we are not listening on %i %i", self.listening_port, pkt.tcp_dst_port)
             return None
 
-
         # get the connection associated with the client's socket, if any
-        socket_client = (pkt.ip_src, pkt.tcp_src_port)
-        socket_server = (pkt.ip_dst, pkt.tcp_dst_port)
+        socket_client = (ip_src, pkt.tcp_src_port)
+        socket_server = (ip_dst, pkt.tcp_dst_port)
         socket_pair = (socket_client, socket_server)
         conn = self.connections.get(socket_pair)
         if not conn:
-            logging.debug('received TCP packet from a new socket pair: %s' % str(socket_pair))
+            logging.debug(
+                "received TCP packet from a new socket pair: %s" % str(socket_pair)
+            )
             # there is no connection for this socket pair -- did we get a SYN?
-            if pkt.is_tcp_syn():
+            if pkt.is_tcp_syn:
                 if len(self.connections) >= self.max_active_conns:
                     logging.info(
-                        'Ignoring new connection request: already have %d active connections (the max)' % self.max_active_conns)
+                        "Ignoring new connection request: already have %d active connections (the max)"
+                        % self.max_active_conns
+                    )
                     return None
 
-                conn = TCPConnection(pkt.seq, pkt.ip_dst, pkt.tcp_dst_port, pkt.ip_src, pkt.tcp_src_port,
-                                     self.__connection_over, self.__connection_has_data_to_send)
+                conn = TCPConnection(
+                    pkt.seq,
+                    ip_dst,
+                    pkt.tcp_dst_port,
+                    ip_src,
+                    pkt.tcp_src_port,
+                    self.__connection_over,
+                    self.__connection_has_data_to_send,
+                )
                 self.connections[socket_pair] = conn
-                logging.debug('received TCP SYN packet -- new connection created: %s' % conn)
+                logging.debug(
+                    "received TCP SYN packet -- new connection created: %s" % conn
+                )
             else:
-                logging.debug('ignoring TCP packet without SYN for socket pair with no existing connection')
+                logging.debug(
+                    "ignoring TCP packet without SYN for socket pair with no existing connection"
+                )
                 return None  # this tcp fragment is not part of an active session: ignore it
 
         # pull out the data
         if len(pkt.tcp_data):
-            logging.debug('Adding segment for %d bytes received' % len(pkt.tcp_data))
+            logging.debug("Adding segment for %d bytes received" % len(pkt.tcp_data))
             try:
                 conn.add_segment(TCPSegment(pkt.seq, pkt.tcp_data))
-            except socket.error:
-                logging.debug('Maximum data allowed for a connection exceeded: closing it')
+            except OSError:
+                logging.debug(
+                    "Maximum data allowed for a connection exceeded: closing it"
+                )
                 conn.close()
                 return None
 
-        if pkt.is_tcp_fin():
+        if pkt.is_tcp_fin:
             conn.fin_received(pkt.seq)
 
         # remember window and latest ACK
-        conn.window = max(1460, pkt.window)  # ignore requests to shrink the window below an MTU
-        if pkt.is_tcp_ack():
+        conn.window = max(
+            1460, pkt.window
+        )  # ignore requests to shrink the window below an MTU
+        if pkt.is_tcp_ack:
             conn.set_ack(pkt.ack)
         return conn

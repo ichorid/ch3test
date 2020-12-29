@@ -1,9 +1,23 @@
+import logging
+
+import logging
+import sys
+
+root = logging.getLogger()
+root.setLevel(logging.DEBUG)
+
+handler = logging.StreamHandler(sys.stdout)
+handler.setLevel(logging.DEBUG)
+logging.getLogger('faker').setLevel(logging.ERROR)
+formatter = logging.Formatter('%(asctime)s - %(name)s - %(levelname)s - %(message)s')
+handler.setFormatter(formatter)
+root.addHandler(handler)
+
 from unittest.mock import Mock
 
 from c3comm import C3Community
 from ipv8.test.base import TestBase
 from tcp_over_ipv8 import TCPConnection, TCPServer
-
 
 class TestC3Transfer(TestBase):
     """
@@ -28,22 +42,35 @@ class TestC3Transfer(TestBase):
 
 
 class TestTcpConn:
-
     def test_tcp(self):
+        print()
         syn_seq = 0
         my_ip = 123
         my_port = 333
-        other_ip = 345
+        server_ip = 345
         other_port = 444
         connection_over_callback = Mock()
         has_data_to_send_callback = Mock()
-        conn = TCPConnection(syn_seq, my_ip, my_port, other_ip, other_port,
-                             connection_over_callback, has_data_to_send_callback)
+        conn = TCPConnection(
+            syn_seq,
+            my_ip,
+            my_port,
+            server_ip,
+            other_port,
+            connection_over_callback,
+            has_data_to_send_callback,
+        )
+        #import logging_tree
+        #logging_tree.printout()
 
-        raw_data = b"aaaaaaaa"
+        raw_data = b"a"*1000*10
         conn.add_data_to_send(raw_data)
         data_to_send = conn.get_packets_to_send()
-        print (data_to_send)
+        print(data_to_send)
 
         server = TCPServer(TCPServer.ANY_PORT)
-        server.handle_tcp(data_to_send[0])
+        for packet in data_to_send:
+            ret_conn = server.handle_tcp(packet, my_ip, server_ip)
+            if ret_conn:
+                ret_packets = ret_conn.get_packets_to_send()
+                print (ret_packets)

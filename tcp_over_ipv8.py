@@ -114,14 +114,11 @@ def make_tcp_packet(
     return TcpPayload(src_port, dst_port, seq, ack, flags, window, data)
 
 
-def add_fin_to_tcp_packet(p):
+def add_fin_to_tcp_packet(payload:TcpPayload):
     """Add the FIN flag to a TCP packet (as returned by make_tcp_packet)."""
-    header = p[0]
-    flags = struct.unpack(">B", header[13])[0]
-    flags |= 0x01
-    flags_byte = struct.pack(">B", flags)
-    new_header = header[:13] + flags_byte + header[14:]
-    return (new_header, p[1])
+    payload.flags |= TCP_FIN_FLAG
+    return payload
+
 
 
 class TCPSegment:
@@ -137,7 +134,7 @@ class TCPSegment:
     def combine(self, s2):
         """Combine this segment with a s2 which comes no earlier than this
         segment starts.  If they do not overlap or meet, False is returned."""
-        assert self.__cmp__(s2) <= 0, "segement 2 must not start earlier"
+        assert self.__cmp__(s2) <= 0, "segment 2 must not start earlier"
 
         if self.next < s2.seq:
             return False  # no overlap: s2 is later than us
@@ -171,7 +168,7 @@ class TCPConnection(TaskManager):
         has_data_to_send_callback,
         assumed_rtt=0.5,
         mtu=1500,
-        max_data=2048,
+        max_data=2048*1024,
         max_wait_time_sec=5,
     ):
         super().__init__()
@@ -187,7 +184,7 @@ class TCPConnection(TaskManager):
         self.max_data = max_data
         self.max_wait_time_sec = max_wait_time_sec
         self.last_activity = time.time()
-        self.register_task(
+        self.register_anonymous_task(
             "Check wait time", self.__check_wait_time, delay=self.max_wait_time_sec
         )
         # reactor.callLater(self.max_wait_time_sec, self.__check_wait_time)
@@ -241,7 +238,7 @@ class TCPConnection(TaskManager):
                 combined_index = i
                 break
 
-        if not combined_index:
+        if combined_index is None:
             self.segments.append(segment)
             logging.debug(
                 "appended the new segment to the end of our current segments list"
@@ -535,14 +532,15 @@ class TCPServer:
     # Pass this value to the constructor and the TCPServer will accept connections on any port.
     ANY_PORT = 0
 
-    def __init__(self, port, max_active_conns=25):
+    def __init__(self, port, max_active_conns=25, has_data_to_send_callback=None):
         """port is the port the TCPServer should listen for SYN packets on."""
-        assert (
-            port >= 0 and port < 65536
-        ), "Port must be between 0 and 65536 (exclusive) or TCPServer.ANY_PORT"
+        assert (0 <= port < 65536), "Port must be between 0 and 65536 (exclusive) or TCPServer.ANY_PORT"
         self.connections = {}
         self.listening_port = port
         self.max_active_conns = max_active_conns
+
+        if has_data_to_send_callback is not None:
+            self.__connection_has_data_to_send = has_data_to_send_callback
 
     def __connection_over(self, conn):
         """Called when it is ready to be removed.  Removes the connection."""
@@ -558,6 +556,7 @@ class TCPServer:
 
     def __connection_has_data_to_send(self, conn):
         """Called when a connection has data to send."""
+        print("HAS DATA TO SEND BACK")
         pass
 
     def handle_tcp(self, pkt: TcpPayload, ip_src, ip_dst):

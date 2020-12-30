@@ -1,17 +1,28 @@
+import inspect
 import logging
 
 import logging
+import random
 import sys
+from asyncio import sleep
 
+import asynctest
+
+random.seed(123)
 root = logging.getLogger()
 root.setLevel(logging.DEBUG)
+
+class PrintHandler(logging.Handler):
+  def emit(self, record):
+    print(self.format(record))
 
 handler = logging.StreamHandler(sys.stdout)
 handler.setLevel(logging.DEBUG)
 logging.getLogger('faker').setLevel(logging.ERROR)
 formatter = logging.Formatter('%(asctime)s - %(name)s - %(levelname)s - %(message)s')
 handler.setFormatter(formatter)
-root.addHandler(handler)
+#root.addHandler(handler)
+root.addHandler(PrintHandler())
 
 from unittest.mock import Mock
 
@@ -34,10 +45,11 @@ class TestC3Transfer(TestBase):
         self.count += 1
         return node
 
-    async def test_data_transfer(self):
-        raw_data = b"ffff00"
 
-        self.nodes[0].overlay.send_raw_data(self.nodes[1].my_peer, raw_data)
+    async def test_data_transfer(self):
+        raw_data = b"a"*1000*10
+
+        self.nodes[0].overlay.send_data(self.nodes[1].my_peer, raw_data)
         await self.deliver_messages(timeout=0.5)
 
 

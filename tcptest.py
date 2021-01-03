@@ -49,8 +49,27 @@ class TestC3Transfer(TestBase):
     async def test_data_transfer(self):
         raw_data = b"a"*1000*10
 
-        self.nodes[0].overlay.send_data(self.nodes[1].my_peer, raw_data)
+        request_title = "test_stuff_foo"
+        self.nodes[1].overlay.data_dict[request_title] = raw_data
+
+        request_title2 = "test_stuff_bar"
+        self.nodes[0].overlay.data_dict[request_title2] = raw_data
+
+        request_title3 = "test_stuff_foobar"
+        self.nodes[0].overlay.data_dict[request_title3] = b"c"*3000
+
+        self.nodes[0].overlay.push_message(self.nodes[1].my_peer, request_title.encode('utf8'))
         await self.deliver_messages(timeout=0.5)
+
+        self.nodes[1].overlay.push_message(self.nodes[0].my_peer, request_title2.encode('utf8'))
+        await self.deliver_messages(timeout=0.5)
+
+
+        self.nodes[1].overlay.push_message(self.nodes[0].my_peer, request_title3.encode('utf8'))
+        await self.deliver_messages(timeout=0.5)
+
+        print(self.nodes[0].overlay.received_messages)
+        print(self.nodes[1].overlay.received_messages)
 
 
 class TestTcpConn:

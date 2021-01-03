@@ -153,6 +153,9 @@ class TCPSegment:
     def __cmp__(self, x):
         return cmp(self.seq, x.seq)
 
+    def __len__(self):
+        return len(self.data)
+
 
 class TCPConnection(TaskManager):
     """Manages the state of one half of a TCP connection."""
@@ -524,6 +527,24 @@ class TCPConnection(TaskManager):
             self.reset_resend_timer()
             self.need_to_send_ack = False
         return ret
+
+    def release_segment_memory(self, num_bytes:int) -> bytes:
+        # Truncate the segment available for consumption to release memory
+        # The segment coincides with the message - pop it
+        ready_segment_size = len(self.segments[0])
+
+        if ready_segment_size < num_bytes:
+            # Not enough bytes in the segment to decode the whole message
+            raise Exception("Can't release segment memory - segment too short! %i %i", num_bytes, ready_segment_size)
+
+        if ready_segment_size == num_bytes:
+            return self.segments.pop(0).data
+
+        # The segment is longer than the message - cut the message body from the segment
+        elif ready_segment_size > num_bytes:
+            segment = self.segments[0]
+            self.segments[0] = TCPSegment(segment.seq + num_bytes, segment.data[num_bytes:])
+            return segment.data
 
 
 class TCPServer:

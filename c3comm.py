@@ -63,7 +63,7 @@ class C3Community(Community):
         self.data_dict = {}
         self.received_messages = []
 
-        self.tcp_server = TCPServer(TCPServer.ANY_PORT, has_data_to_send_callback=self.send_segments_for_connection)
+        self.tcp_server = TCPServer(has_data_to_send_callback=self.send_segments_for_connection)
 
         self.add_message_handler(TcpPayload, self.on_tcp8_packet)
 
@@ -81,17 +81,15 @@ class C3Community(Community):
 
     def push_data(self, peer, raw_data):
         ip_src = self.my_peer
-        tcp_src_port = random.randint(1024, 6500)
         ip_dst = peer
-        tcp_dst_port = CHANNELS_SERVER_PORT
 
         def connection_over_callback(s: TCPConnection):
             print("OVER")
 
         has_data_to_send_callback = self.send_segments_for_connection
 
-        socket_client = (ip_src, tcp_src_port)
-        socket_server = (ip_dst, tcp_dst_port)
+        socket_client = ip_src
+        socket_server = ip_dst
         socket_pair = (socket_server, socket_client)
         conn = self.tcp_server.connections.get(socket_pair)
         if not conn:
@@ -102,9 +100,7 @@ class C3Community(Community):
             conn = TCPConnection(
                 syn_seq,
                 ip_src,
-                tcp_src_port,
                 ip_dst,
-                tcp_dst_port,
                 connection_over_callback,
                 has_data_to_send_callback,
             )
@@ -143,15 +139,21 @@ class C3Community(Community):
     @lazy_wrapper(TcpPayload)
     async def on_tcp8_packet(self, src_peer, tcp8_payload):
         conn = self.tcp_server.handle_tcp(tcp8_payload, src_peer, self.my_peer)
-        if conn.has_ready_data():
-            message_data = self.check_message_ready(conn)
-            if conn.my_port == CHANNELS_SERVER_PORT:
-                msg_id, msg_content = self.try_decode_message(message_data)
-                if msg_id is not None:
-                    response = self.on_client_message_received(msg_content)
-                    conn.add_data_to_send(pack_message(pack_response(msg_id, response)))
-            else:
-                print(message_data)
+        if not conn.has_ready_data():
+            return
+
+        message_data = self.check_message_ready(conn)
+        if message_data is None:
+            return
+
+        msg_id, msg_content = self.try_decode_message(message_data)
+        if msg_id is None:
+            return
+
+        response = self.on_client_message_received(msg_content)
+        print ("RESP ", response)
+        conn.add_data_to_send(pack_message(pack_response(msg_id, response)))
+
 
     def on_client_message_received(self, message_data):
         return self.data_dict.get(json.loads(message_data.decode('utf8'))["data_id"], b"")

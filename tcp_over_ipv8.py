@@ -22,9 +22,6 @@ HTTP_PORT = struct.pack("> H", 80)  # normally 80
 HTTP_ALT_PORT = struct.pack("> H", 8080)  # normally 8080
 
 
-def is_http_port(port):
-    return port == HTTP_PORT or port == HTTP_ALT_PORT
-
 
 def checksum(buf):
     """One's complement 16-bit checksum."""
@@ -62,15 +59,13 @@ TCP_ACK_FLAG = 0x10
 class TcpPayload(VariablePayload):
     msg_id = 22
     names = [
-        "tcp_src_port",
-        "tcp_dst_port",
         "seq",
         "ack",
         "flags",
         "window",
         "tcp_data",
     ]
-    format_list = ["H", "H", "I", "I", "B", "H", "raw"]
+    format_list = ["I", "I", "B", "H", "raw"]
 
     @property
     def is_tcp_syn(self):
@@ -90,8 +85,6 @@ def cmp(a, b):
 
 
 def make_tcp_packet(
-    src_port,
-    dst_port,
     seq=0,
     ack=0,
     window=5096,
@@ -111,7 +104,7 @@ def make_tcp_packet(
         flags |= TCP_RST_FLAG
     if is_ack:
         flags |= TCP_ACK_FLAG
-    return TcpPayload(src_port, dst_port, seq, ack, flags, window, data)
+    return TcpPayload(seq, ack, flags, window, data)
 
 
 def add_fin_to_tcp_packet(payload:TcpPayload):
@@ -164,9 +157,7 @@ class TCPConnection(TaskManager):
         self,
         syn_seq,
         my_ip,
-        my_port,
         other_ip,
-        other_port,
         connection_over_callback,
         has_data_to_send_callback,
         assumed_rtt=0.5,
@@ -177,9 +168,7 @@ class TCPConnection(TaskManager):
         super().__init__()
         # socket pair
         self.my_ip = my_ip
-        self.my_port = my_port
         self.other_ip = other_ip
-        self.other_port = other_port
 
         # TCP configuration
         self.rtt = assumed_rtt
@@ -315,7 +304,7 @@ class TCPConnection(TaskManager):
 
     def get_socket_pair(self):
         """Returns the socket pair describing this connection (other then self)."""
-        return ((self.other_ip, self.other_port), (self.my_ip, self.my_port))
+        return self.other_ip, self.my_ip
 
     def has_data_to_send(self):
         """Returns True if there is an unACK'ed data waiting to be sent."""
@@ -416,8 +405,6 @@ class TCPConnection(TaskManager):
             logging.debug("Adding my SYN packet to the outgoing queue")
             ret.append(
                 make_tcp_packet(
-                    self.my_port,
-                    self.other_port,
                     seq=self.first_unacked_seq,
                     ack=self.__get_ack_num(),
                     data=b"",
@@ -478,8 +465,6 @@ class TCPConnection(TaskManager):
                 )
                 ret.append(
                     make_tcp_packet(
-                        self.my_port,
-                        self.other_port,
                         seq=start_seq,
                         ack=self.__get_ack_num(),
                         data=self.data_to_send[start_index:end_index_plus1],
@@ -497,8 +482,6 @@ class TCPConnection(TaskManager):
                     logging.debug("Adding my FIN packet to the outgoing queue")
                     ret.append(
                         make_tcp_packet(
-                            self.my_port,
-                            self.other_port,
                             seq=base_offset + sz,
                             ack=self.__get_ack_num(),
                             data="",
@@ -515,8 +498,6 @@ class TCPConnection(TaskManager):
             )
             ret.append(
                 make_tcp_packet(
-                    self.my_port,
-                    self.other_port,
                     seq=self.first_unacked_seq,
                     ack=self.__get_ack_num(),
                     data=b"",
@@ -550,14 +531,8 @@ class TCPConnection(TaskManager):
 class TCPServer:
     """Implements a basic TCP Server which handles raw TCP packets passed to it."""
 
-    # Pass this value to the constructor and the TCPServer will accept connections on any port.
-    ANY_PORT = 0
-
-    def __init__(self, port, max_active_conns=25, has_data_to_send_callback=None):
-        """port is the port the TCPServer should listen for SYN packets on."""
-        assert (0 <= port < 65536), "Port must be between 0 and 65536 (exclusive) or TCPServer.ANY_PORT"
+    def __init__(self, max_active_conns=25, has_data_to_send_callback=None):
         self.connections = {}
-        self.listening_port = port
         self.max_active_conns = max_active_conns
 
         if has_data_to_send_callback is not None:
@@ -585,17 +560,9 @@ class TCPServer:
         packet.  Returns the TCPConnection pkt is associated with, if any."""
         # assert pkt.is_tcp() and pkt.is_valid_tcp(), "TCPServer.handle_tcp expects a valid TCP packet as input"
 
-        # ignore TCP packets not to us
-        if (
-            self.listening_port != TCPServer.ANY_PORT
-            and pkt.tcp_dst_port != self.listening_port
-        ):
-            logging.debug("ignoring TCP packet to a port we are not listening on %i %i", self.listening_port, pkt.tcp_dst_port)
-            return None
-
         # get the connection associated with the client's socket, if any
-        socket_client = (ip_src, pkt.tcp_src_port)
-        socket_server = (ip_dst, pkt.tcp_dst_port)
+        socket_client = ip_src
+        socket_server = ip_dst
         socket_pair = (socket_client, socket_server)
         conn = self.connections.get(socket_pair)
         if not conn:
@@ -614,9 +581,7 @@ class TCPServer:
                 conn = TCPConnection(
                     pkt.seq,
                     ip_dst,
-                    pkt.tcp_dst_port,
                     ip_src,
-                    pkt.tcp_src_port,
                     self.__connection_over,
                     self.__connection_has_data_to_send,
                 )

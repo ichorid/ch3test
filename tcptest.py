@@ -75,6 +75,7 @@ class TestC3Transfer(TestBase):
         print(self.nodes[1].overlay.received_messages)
 
         request_dict = {"data_id": 123}
+        self.nodes[0].overlay.data_dict[123] = b"3"*3000
         self.nodes[1].overlay.send_request(peer0, request_dict)
         await self.deliver_messages(timeout=0.5)
 

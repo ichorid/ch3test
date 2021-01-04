@@ -79,6 +79,19 @@ class TestC3Transfer(TestBase):
         self.nodes[1].overlay.send_request(peer0, request_dict)
         await self.deliver_messages(timeout=0.5)
 
+    async def test_tsapa(self):
+        raw_data = b"a"*1000*10
+
+        peer0 = self.nodes[0].my_peer
+        peer1 = self.nodes[1].my_peer
+
+        r1_id, r1_content = 123,  b"3"*3000
+        self.nodes[0].overlay.tsapa.add_resource(r1_id, r1_content)
+        self.nodes[1].overlay.send_request(peer0, {"data_id": r1_id})
+
+        await self.deliver_messages(timeout=0.5)
+        print (self.nodes[1].overlay.tsapa.resources)
+
 
 
 class TestTcpConn:

@@ -1,8 +1,9 @@
 import json
 import logging
-import random
 import struct
 from binascii import unhexlify
+from dataclasses import dataclass
+from typing import Set
 
 from ipv8.community import Community
 from ipv8.lazy_community import lazy_wrapper
@@ -15,31 +16,47 @@ BINARY_FIELDS = ("infohash", "channel_pk")
 
 CHANNELS_SERVER_PORT = 99
 
-MESSAGE_HEADER_MAGIC = unhexlify("2dfcccbeab69fcb3")
-MESSAGE_HEADER_FORMAT = ">8s I"
-MESSAGE_HEADER_SIZE = 12
 
-REQUEST_MAGIC = unhexlify("a181e2cd938fbcc0")
-REQUEST_HEADER_FORMAT = ">8s I"
-REQUEST_HEADER_SIZE = 12
+@dataclass
+class PacketHeader:
+    magic: bytes
+    format: str
 
-RESPONSE_MAGIC = unhexlify("0ccbf839dc2e181a")
-RESPONSE_HEADER_FORMAT = ">8s I"
-RESPONSE_HEADER_SIZE = 12
+    @property
+    def size(self):
+        return struct.calcsize(self.format)
+
+
+class MessageHeader(PacketHeader):
+    def try_decode_message(self, msg: bytes):
+        if len(msg) > self.size:
+            header = msg[:self.size]
+            magic, msg_id = struct.unpack(self.format, header)
+            if magic == self.magic:
+                return msg_id, msg[self.size:]
+        return None, None
+
+
+MESSAGE_HEADER = PacketHeader(unhexlify("2dfcccbeab69fcb3"), ">8s I")
+
+REQUEST_HEADER = MessageHeader(unhexlify("a181e2cd938fbcc0"), ">8s I")
+RESPONSE_HEADER = MessageHeader(unhexlify("0ccbf839dc2e181a"), ">8s I")
+
+
 
 
 def pack_message(message_data: bytes) -> bytes:
-    header = struct.pack(MESSAGE_HEADER_FORMAT, MESSAGE_HEADER_MAGIC, len(message_data))
+    header = struct.pack(MESSAGE_HEADER.format, MESSAGE_HEADER.magic, len(message_data))
     return header + message_data
 
 
 def pack_request(request_id: int, request_data: bytes) -> bytes:
-    header = struct.pack(REQUEST_HEADER_FORMAT, REQUEST_MAGIC, request_id)
+    header = struct.pack(REQUEST_HEADER.format, REQUEST_HEADER.magic, request_id)
     return header + request_data
 
 
 def pack_response(response_id: int, response_data: bytes) -> bytes:
-    header = struct.pack(RESPONSE_HEADER_FORMAT, RESPONSE_MAGIC, response_id)
+    header = struct.pack(RESPONSE_HEADER.format, RESPONSE_HEADER.magic, response_id)
     return header + response_data
 
 
@@ -54,18 +71,78 @@ class SelectRequest(RandomNumberCache):
         pass
 
 
+@dataclass
+class Host:
+    pass
+
+
+@dataclass
+class ResId:
+    numeric_id: int
+    providers: Set[Host]
+
+    def __hash__(self):
+        return hash(self.numeric_id)
+
+
+@dataclass
+class Resource:
+    id_: ResId
+    parent_id: ResId
+    children_ids: Set[ResId]
+
+    def __hash__(self):
+        return hash(self.id_)
+
+
+class Tsapa:
+    def __init__(self):
+        self.resources = {}  # resources this host provides to the network
+        # self.resources_cache = Set[ResId]  # resources this host knows about
+        # self.my_resources = Dict[int]  # resources this host provides to the network
+        # self.permanent_peers = Set[Host]  # Our permanent connections
+
+    def get_resource(self, res_id: int):
+        resource = self.resources.get(res_id, b"")
+        return resource
+
+    def add_resource(self, res_id: int, res_data: bytes):
+        if self.resources.get(res_id):
+            raise Exception("Trying to overwrite resource!")
+        self.resources[res_id] = res_data
+
+
 class C3Community(Community):
     community_id = unhexlify('eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee')
+
 
     def __init__(self, my_peer, endpoint, network):
         super().__init__(my_peer, endpoint, network=network)
         self.request_cache = RequestCache()
-        self.data_dict = {}
+        self.tsapa = Tsapa()
         self.received_messages = []
 
         self.tcp_server = TCPServer(has_data_to_send_callback=self.send_segments_for_connection)
 
         self.add_message_handler(TcpPayload, self.on_tcp8_packet)
+        self.tcp_message_reactions = (
+            (REQUEST_HEADER, self.on_request_received),
+            (RESPONSE_HEADER, self.on_response_received))
+
+    def on_request_received(self, src_peer, req_id, req_data):
+        res_id = json.loads(req_data.decode('utf8'))["data_id"]
+        resource = self.tsapa.get_resource(res_id)
+        self.send_message(src_peer, pack_response(req_id, resource))
+
+    def on_response_received(self, src_peer, req_id, req_data):
+        request = self.request_cache.get(hexlify(src_peer.mid), req_id)
+        if request is None:
+            return
+        self.request_cache.pop(hexlify(src_peer.mid), req_id)
+
+        if req_data is not b"":
+            res_id = request.request_data["data_id"]
+            self.tsapa.add_resource(res_id, req_data)
 
     def send_request(self, peer: Peer, request_dict: dict):
         def on_response(data):
@@ -111,15 +188,16 @@ class C3Community(Community):
         # Parse the message header
         segment_data = conn.get_data()
         # TODO: stop unpacking every time
-        magic, message_size = struct.unpack(MESSAGE_HEADER_FORMAT, segment_data[:MESSAGE_HEADER_SIZE])
-        frame_size = MESSAGE_HEADER_SIZE + message_size
-        if magic != MESSAGE_HEADER_MAGIC:
+        magic, message_size = struct.unpack(MESSAGE_HEADER.format, segment_data[:MESSAGE_HEADER.size])
+        frame_size = MESSAGE_HEADER.size + message_size
+        if magic != MESSAGE_HEADER.magic:
             raise Exception("Wrong magic bytes in message %s", hexlify(magic))
 
         if len(segment_data) < frame_size:
             # Not enough bytes in the segment to decode the whole message - skipping
             return None
-        message_body = conn.release_segment_memory(frame_size)[MESSAGE_HEADER_SIZE:]
+
+        message_body = conn.release_segment_memory(frame_size)[MESSAGE_HEADER.size:]
         self.received_messages.append(message_body)
         return message_body
 
@@ -127,37 +205,27 @@ class C3Community(Community):
         for segment_payload in connection.get_packets_to_send():
             self.ez_send(connection.other_ip, segment_payload)
 
-    @staticmethod
-    def try_decode_message(msg):
-        if len(msg) > REQUEST_HEADER_SIZE:
-            header = msg[:REQUEST_HEADER_SIZE]
-            magic, msg_id = struct.unpack(REQUEST_HEADER_FORMAT, header)
-            if magic == REQUEST_MAGIC:
-                return msg_id, msg[REQUEST_HEADER_SIZE:]
-        return None, None
-
     @lazy_wrapper(TcpPayload)
     async def on_tcp8_packet(self, src_peer, tcp8_payload):
+
+        # Data contains a segment
         conn = self.tcp_server.handle_tcp(tcp8_payload, src_peer, self.my_peer)
         if not conn.has_ready_data():
             return
 
+        # Segment contains a message
         message_data = self.check_message_ready(conn)
         if message_data is None:
             return
 
-        msg_id, msg_content = self.try_decode_message(message_data)
-        if msg_id is None:
-            return
+        # Message contains a request/response
+        msg_id, msg_content = None, None
+        for header_type, reaction_callback in self.tcp_message_reactions:
+            msg_id, msg_content = header_type.try_decode_message(message_data)
 
-        response = self.on_client_message_received(msg_content)
-        print ("RESP ", response)
-        conn.add_data_to_send(pack_message(pack_response(msg_id, response)))
-
-
-    def on_client_message_received(self, message_data):
-        return self.data_dict.get(json.loads(message_data.decode('utf8'))["data_id"], b"")
-
+            if msg_id is not None:
+                reaction_callback(src_peer, msg_id, msg_content)
+                return
     async def unload(self):
         await self.request_cache.shutdown()
         for conn in self.tcp_server.connections.values():

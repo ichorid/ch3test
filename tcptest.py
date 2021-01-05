@@ -1,27 +1,26 @@
-import inspect
-import logging
-
+import json
 import logging
 import random
 import sys
-from asyncio import sleep
 
-import asynctest
+from utils import hash_str_to_int
 
 random.seed(123)
 root = logging.getLogger()
 root.setLevel(logging.DEBUG)
 
+
 class PrintHandler(logging.Handler):
-  def emit(self, record):
-    print(self.format(record))
+    def emit(self, record):
+        print(self.format(record))
+
 
 handler = logging.StreamHandler(sys.stdout)
 handler.setLevel(logging.DEBUG)
 logging.getLogger('faker').setLevel(logging.ERROR)
 formatter = logging.Formatter('%(asctime)s - %(name)s - %(levelname)s - %(message)s')
 handler.setFormatter(formatter)
-#root.addHandler(handler)
+# root.addHandler(handler)
 root.addHandler(PrintHandler())
 
 from unittest.mock import Mock
@@ -29,6 +28,7 @@ from unittest.mock import Mock
 from c3comm import C3Community
 from ipv8.test.base import TestBase
 from tcp_over_ipv8 import TCPConnection, TCPServer
+
 
 class TestC3Transfer(TestBase):
     """
@@ -45,9 +45,8 @@ class TestC3Transfer(TestBase):
         self.count += 1
         return node
 
-
     async def test_data_transfer(self):
-        raw_data = b"a"*1000*10
+        raw_data = b"a" * 1000 * 10
 
         peer0 = self.nodes[0].my_peer
         peer1 = self.nodes[1].my_peer
@@ -59,14 +58,13 @@ class TestC3Transfer(TestBase):
         self.nodes[0].overlay.data_dict[request_title2] = raw_data
 
         request_title3 = "test_stuff_foobar"
-        self.nodes[0].overlay.data_dict[request_title3] = b"c"*3000
+        self.nodes[0].overlay.data_dict[request_title3] = b"c" * 3000
 
         self.nodes[0].overlay.send_message(peer1, request_title.encode('utf8'))
         await self.deliver_messages(timeout=0.5)
 
         self.nodes[1].overlay.send_message(peer0, request_title2.encode('utf8'))
         await self.deliver_messages(timeout=0.5)
-
 
         self.nodes[1].overlay.send_message(peer0, request_title3.encode('utf8'))
         await self.deliver_messages(timeout=0.5)
@@ -75,23 +73,43 @@ class TestC3Transfer(TestBase):
         print(self.nodes[1].overlay.received_messages)
 
         request_dict = {"data_id": 123}
-        self.nodes[0].overlay.data_dict[123] = b"3"*3000
+        self.nodes[0].overlay.data_dict[123] = b"3" * 3000
         self.nodes[1].overlay.send_request(peer0, request_dict)
         await self.deliver_messages(timeout=0.5)
 
-    async def test_tsapa(self):
-        raw_data = b"a"*1000*10
+    async def test_tsapa_pull(self):
+        raw_data = b"a" * 1000 * 10
 
         peer0 = self.nodes[0].my_peer
         peer1 = self.nodes[1].my_peer
 
-        r1_id, r1_content = 123,  b"3"*3000
+        r1_id, r1_content = 123, b"3" * 3000
         self.nodes[0].overlay.tsapa.add_resource(r1_id, r1_content)
         self.nodes[1].overlay.send_request(peer0, {"data_id": r1_id})
 
         await self.deliver_messages(timeout=0.5)
-        print (self.nodes[1].overlay.tsapa.resources)
+        print(self.nodes[1].overlay.tsapa.resources)
 
+    async def test_tsapa_push(self):
+        raw_data = b"a" * 1000 * 10
+
+        peer0 = self.nodes[0].my_peer
+        peer1 = self.nodes[1].my_peer
+
+        r1_content = {'created': '20210105205236573',
+                      'fields': {'my-field': '0.4954d7f024692'},
+                      'modified': '20210105205244513',
+                      'tags': [],
+                      'text': 'bla-bla',
+                      'title': 'foobar',
+                      'type': 'text/vnd.tiddlywiki'}
+
+        r1_id = hash_str_to_int(json.dumps(r1_content))
+        self.nodes[0].overlay.tsapa.add_resource(r1_id, r1_content)
+        # self.nodes[1].overlay.send_request(peer0, {"data_id": r1_id})
+
+        await self.deliver_messages(timeout=0.5)
+        print(self.nodes[1].overlay.tsapa.resources)
 
 
 class TestTcpConn:
@@ -113,10 +131,10 @@ class TestTcpConn:
             connection_over_callback,
             has_data_to_send_callback,
         )
-        #import logging_tree
-        #logging_tree.printout()
+        # import logging_tree
+        # logging_tree.printout()
 
-        raw_data = b"a"*1000*10
+        raw_data = b"a" * 1000 * 10
         conn.add_data_to_send(raw_data)
         data_to_send = conn.get_packets_to_send()
         print(data_to_send)
@@ -126,4 +144,4 @@ class TestTcpConn:
             ret_conn = server.handle_tcp(packet, my_ip, server_ip)
             if ret_conn:
                 ret_packets = ret_conn.get_packets_to_send()
-                print (ret_packets)
+                print(ret_packets)

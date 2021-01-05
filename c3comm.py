@@ -3,14 +3,17 @@ import logging
 import struct
 from binascii import unhexlify
 from dataclasses import dataclass
+from functools import cached_property
 from typing import Set
 
 from ipv8.community import Community
 from ipv8.lazy_community import lazy_wrapper
+from ipv8.peerdiscovery.network import Network
 from ipv8.requestcache import RandomNumberCache, RequestCache
 from ipv8.test.REST.test_overlays_endpoint import hexlify
 from ipv8.types import Peer
 from tcp_over_ipv8 import TCPServer, TcpPayload, TCPConnection
+from utils import hash_str_to_int
 
 BINARY_FIELDS = ("infohash", "channel_pk")
 
@@ -22,7 +25,7 @@ class PacketHeader:
     magic: bytes
     format: str
 
-    @property
+    @cached_property
     def size(self):
         return struct.calcsize(self.format)
 
@@ -41,8 +44,7 @@ MESSAGE_HEADER = PacketHeader(unhexlify("2dfcccbeab69fcb3"), ">8s I")
 
 REQUEST_HEADER = MessageHeader(unhexlify("a181e2cd938fbcc0"), ">8s I")
 RESPONSE_HEADER = MessageHeader(unhexlify("0ccbf839dc2e181a"), ">8s I")
-
-
+PUSH_HEADER = MessageHeader(unhexlify("cbd4bf5911517bf2"), ">8s I")
 
 
 def pack_message(message_data: bytes) -> bytes:
@@ -58,6 +60,10 @@ def pack_request(request_id: int, request_data: bytes) -> bytes:
 def pack_response(response_id: int, response_data: bytes) -> bytes:
     header = struct.pack(RESPONSE_HEADER.format, RESPONSE_HEADER.magic, response_id)
     return header + response_data
+
+def pack_push_resource(push_id: int, resource_data: bytes) -> bytes:
+    header = struct.pack(PUSH_HEADER.format, PUSH_HEADER.magic, push_id)
+    return header + resource_data
 
 
 class SelectRequest(RandomNumberCache):
@@ -96,7 +102,8 @@ class Resource:
 
 
 class Tsapa:
-    def __init__(self):
+    def __init__(self, on_add_resource=None):
+        self.on_add_resource = on_add_resource or (lambda _: None)
         self.resources = {}  # resources this host provides to the network
         # self.resources_cache = Set[ResId]  # resources this host knows about
         # self.my_resources = Dict[int]  # resources this host provides to the network
@@ -107,27 +114,48 @@ class Tsapa:
         return resource
 
     def add_resource(self, res_id: int, res_data: bytes):
-        if self.resources.get(res_id):
-            raise Exception("Trying to overwrite resource!")
+        #if self.resources.get(res_id):
+            #raise Exception("Trying to overwrite resource!")
+        old = self.resources.get(res_id)
+        if old is not None:
+            if hash(json.dumps(old)) == hash(json.dumps(res_data)):
+                return
         self.resources[res_id] = res_data
+        self.on_add_resource(res_data)
 
 
 class C3Community(Community):
     community_id = unhexlify('eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee')
 
-
     def __init__(self, my_peer, endpoint, network):
         super().__init__(my_peer, endpoint, network=network)
         self.request_cache = RequestCache()
-        self.tsapa = Tsapa()
+        self.tsapa = Tsapa(on_add_resource=self.push_resource_to_peers)
         self.received_messages = []
 
         self.tcp_server = TCPServer(has_data_to_send_callback=self.send_segments_for_connection)
 
         self.add_message_handler(TcpPayload, self.on_tcp8_packet)
         self.tcp_message_reactions = (
+            (RESPONSE_HEADER, self.on_response_received),
             (REQUEST_HEADER, self.on_request_received),
-            (RESPONSE_HEADER, self.on_response_received))
+            (PUSH_HEADER, self.on_push_received))
+        
+        
+    def push_resource_to_peers(self, res):
+        print ("PUSHING", res["title"])
+        for p in self.get_peers():
+            self.push_resource(p, res)
+
+    def push_resource(self, dst_peer, res):
+        push_msg = pack_push_resource(123, json.dumps(res).encode('utf8'))
+        self.send_message(dst_peer, push_msg)
+
+    def on_push_received(self, src_peer, push_id, push_data):
+        push_dict = json.loads(push_data.decode('utf8'))
+        print ("RECEIVED PUSH", push_dict["title"])
+        res_id = hash_str_to_int(push_dict["title"])
+        self.tsapa.add_resource(res_id, push_dict)
 
     def on_request_received(self, src_peer, req_id, req_data):
         res_id = json.loads(req_data.decode('utf8'))["data_id"]
@@ -140,7 +168,7 @@ class C3Community(Community):
             return
         self.request_cache.pop(hexlify(src_peer.mid), req_id)
 
-        if req_data is not b"":
+        if req_data != b"":
             res_id = request.request_data["data_id"]
             self.tsapa.add_resource(res_id, req_data)
 
@@ -219,16 +247,26 @@ class C3Community(Community):
             return
 
         # Message contains a request/response
-        msg_id, msg_content = None, None
         for header_type, reaction_callback in self.tcp_message_reactions:
             msg_id, msg_content = header_type.try_decode_message(message_data)
 
             if msg_id is not None:
                 reaction_callback(src_peer, msg_id, msg_content)
                 return
+
+    def started(self):
+        async def print_peers():
+            print("I am:", self.my_peer, "\nI know:", [str(p) for p in self.get_peers()])
+
+        # We register a asyncio task with this overlay.
+        # This makes sure that the task ends when this overlay is unloaded.
+        # We call the 'print_peers' function every 5.0 seconds, starting now.
+        self.register_task("print_peers", print_peers, interval=5.0, delay=0)
+
     async def unload(self):
         await self.request_cache.shutdown()
         for conn in self.tcp_server.connections.values():
             await conn.shutdown_task_manager()
 
         await super().unload()
+

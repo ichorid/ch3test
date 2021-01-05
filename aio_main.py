@@ -1,3 +1,6 @@
+from aiohttp import web
+
+
 @app.get("/asgi")
 async def root(request: ASGIRequest):
     return {

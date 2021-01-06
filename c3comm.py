@@ -8,7 +8,6 @@ from typing import Set
 
 from ipv8.community import Community
 from ipv8.lazy_community import lazy_wrapper
-from ipv8.peerdiscovery.network import Network
 from ipv8.requestcache import RandomNumberCache, RequestCache
 from ipv8.test.REST.test_overlays_endpoint import hexlify
 from ipv8.types import Peer
@@ -60,6 +59,7 @@ def pack_request(request_id: int, request_data: bytes) -> bytes:
 def pack_response(response_id: int, response_data: bytes) -> bytes:
     header = struct.pack(RESPONSE_HEADER.format, RESPONSE_HEADER.magic, response_id)
     return header + response_data
+
 
 def pack_push_resource(push_id: int, resource_data: bytes) -> bytes:
     header = struct.pack(PUSH_HEADER.format, PUSH_HEADER.magic, push_id)
@@ -114,8 +114,8 @@ class Tsapa:
         return resource
 
     def add_resource(self, res_id: int, res_data: bytes):
-        #if self.resources.get(res_id):
-            #raise Exception("Trying to overwrite resource!")
+        # if self.resources.get(res_id):
+        # raise Exception("Trying to overwrite resource!")
         old = self.resources.get(res_id)
         if old is not None:
             if hash(json.dumps(old)) == hash(json.dumps(res_data)):
@@ -140,10 +140,9 @@ class C3Community(Community):
             (RESPONSE_HEADER, self.on_response_received),
             (REQUEST_HEADER, self.on_request_received),
             (PUSH_HEADER, self.on_push_received))
-        
-        
+
     def push_resource_to_peers(self, res):
-        print ("PUSHING", res["title"])
+        print("PUSHING", res["title"])
         for p in self.get_peers():
             self.push_resource(p, res)
 
@@ -153,7 +152,7 @@ class C3Community(Community):
 
     def on_push_received(self, src_peer, push_id, push_data):
         push_dict = json.loads(push_data.decode('utf8'))
-        print ("RECEIVED PUSH", push_dict["title"])
+        print("RECEIVED PUSH", push_dict["title"])
         res_id = hash_str_to_int(push_dict["title"])
         self.tsapa.add_resource(res_id, push_dict)
 
@@ -269,4 +268,3 @@ class C3Community(Community):
             await conn.shutdown_task_manager()
 
         await super().unload()
-

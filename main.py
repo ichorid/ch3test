@@ -2,7 +2,6 @@ import hashlib
 import os
 import sys
 from asyncio import ensure_future
-from pprint import pprint
 from typing import Optional
 
 import uvicorn
@@ -22,7 +21,6 @@ app = FastAPI()
 app.mount("/static", StaticFiles(directory="wiki1/output"), name="static")
 
 
-
 @app.get("/")
 async def read_root():
     return {"Hello": "World"}
@@ -37,7 +35,7 @@ async def get_status():
 async def get_tiddlers2(filter: Optional[str] = None):
     tiddlers_dict = app.state.c3comm.tsapa.resources
     tiddler_titles_list = [t["title"] for t in tiddlers_dict.values()]
-    print (tiddler_titles_list)
+    print(tiddler_titles_list)
     return {"modifications": tiddler_titles_list, "deletions": []}
 
 
@@ -52,7 +50,7 @@ async def get_tiddlers(tiddler_title: str):
 async def put_tiddler_etag(request: Request):
     json_obj = await request.json()
     h = str(hashlib.sha256(str(json_obj).encode('utf8')))
-    #pprint(json_obj)
+    # pprint(json_obj)
     return "recipes/" + request.path_params["tiddler_title"] + "/" + "123" + ":" + h
 
 
@@ -60,7 +58,7 @@ async def put_tiddler_etag(request: Request):
 async def save_tiddler(request: Request, tiddler_title: str):
     tiddlers_dict = app.state.c3comm.tsapa.resources
     json_obj = await request.json()
-    #pprint(json_obj)
+    # pprint(json_obj)
     assert tiddler_title == json_obj["title"]
     if json_obj.get('text'):
         fields = json_obj.get('fields')
@@ -68,14 +66,11 @@ async def save_tiddler(request: Request, tiddler_title: str):
             if 'draft.of' in fields:
                 return {}
         title_hash = hash_str_to_int(tiddler_title)
-        #tiddlers_dict.[title_hash] = json_obj
+        # tiddlers_dict.[title_hash] = json_obj
         app.state.c3comm.tsapa.add_resource(title_hash, dict(json_obj))
-        print ("SAVE TIDDLER")
-
-
+        print("SAVE TIDDLER")
 
     print("RESOURCES", app.state.c3comm.tsapa.resources)
-
 
     return {}
 
@@ -99,7 +94,7 @@ async def startup_event():
 
 async def start_communities():
     i = 0
-    if len(sys.argv)>1:
+    if len(sys.argv) > 1:
         i = int(sys.argv[1])
     builder = ConfigBuilder().clear_keys().clear_overlays()
     builder.add_key("my peer", "medium", f"ec{i}.pem")
@@ -114,7 +109,7 @@ async def start_communities():
 if __name__ == "__main__":
 
     port = 8000
-    if len(sys.argv)>1:
+    if len(sys.argv) > 1:
         port = int(sys.argv[1])
 
     uvicorn.run(app, host="0.0.0.0", port=port)

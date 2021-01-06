@@ -162,7 +162,7 @@ class TCPConnection(TaskManager):
         has_data_to_send_callback,
         assumed_rtt=0.5,
         mtu=1500,
-        max_data=2048*1024*10,
+        max_data=2048*1024*100,
         max_wait_time_sec=50,
     ):
         super().__init__()
